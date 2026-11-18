@@ -1,10 +1,22 @@
 """
 Gestor de Transacciones (GT): la puerta de entrada del sistema.
 
-    clientes (REQ) --> [ROUTER :GT_PUERTO_CLIENTES]  GT  [DEALER :GT_PUERTO_RMC] <-- RMC (REP)
+Todo cliente le habla solo al GT. El GT mira el tipo de peticion y la manda
+por uno de dos caminos:
 
-El GT hace bind en los dos lados: los clientes y los RMC lo buscan a el.
-Para agregar una replica del RMC basta con arrancarla; el GT no cambia.
+  Canal SINCRONO (CONSULTA, RESERVA, MODIFICACION): se reenvia a un RMC y la
+  respuesta del RMC se le devuelve al cliente.
+
+      clientes (REQ) --> [ROUTER :GT_PUERTO_CLIENTES]  GT  [DEALER :GT_PUERTO_RMC] <-- RMC (REP)
+
+  Canal ASINCRONO (CANCELACION): se contesta de una vez "ACK" (recibido) al
+  cliente y la peticion se empuja al Servicio de Cancelacion, sin esperarlo.
+
+      GT [PUSH :GT_PUERTO_CANCELACION] --> Servicio de Cancelacion (PULL)
+
+El GT hace bind (abre el puerto) en los tres lados: los clientes, los RMC y el
+servicio de cancelacion lo buscan a el. Para agregar una replica del RMC basta
+con arrancarla; el DEALER reparte las peticiones entre todos los RMC conectados.
 """
 import time
 
@@ -14,8 +26,8 @@ from config import configuracion as config
 from config import E_mensaje as m
 from capa_negocios.metricas import RegistroMetricas
 
-# Peticiones que el canal sincrono acepta en la primera entrega
-TIPOS_SINCRONOS = {m.CONSULTA, m.RESERVA}
+# Peticiones que van por el canal sincrono (al RMC)
+TIPOS_SINCRONOS = {m.CONSULTA, m.RESERVA, m.MODIFICACION}
 
 
 def log(texto):
@@ -26,25 +38,36 @@ class GestorTransacciones:
     def __init__(self, ruta_metricas="resultados/gt_metricas.csv"):
         self.contexto = zmq.Context()
 
+        # ROUTER: puede atender a muchos clientes a la vez y recuerda quien envio
+        # cada mensaje (la "identidad" va en el primer frame del mensaje).
         self.frontend = self.contexto.socket(zmq.ROUTER)      # lado de los clientes
         self.frontend.bind(config.direccion_bind(config.GT_PUERTO_CLIENTES))
 
+        # DEALER: reparte las peticiones entre los RMC conectados (por turnos).
         self.backend = self.contexto.socket(zmq.DEALER)       # lado de los RMC
         self.backend.bind(config.direccion_bind(config.GT_PUERTO_RMC))
 
+        # PUSH: empuja cancelaciones al servicio de cancelacion, sin esperar respuesta.
+        self.canal_cancelacion = self.contexto.socket(zmq.PUSH)
+        self.canal_cancelacion.setsockopt(zmq.LINGER, 0)
+        self.canal_cancelacion.bind(config.direccion_bind(config.GT_PUERTO_CANCELACION))
+
+        # El poller vigila varios sockets a la vez y avisa cual tiene algo que leer
         self.poller = zmq.Poller()
         self.poller.register(self.frontend, zmq.POLLIN)
         self.poller.register(self.backend, zmq.POLLIN)
 
-        # uuid -> (hora de entrada, tipo, id_cliente)
+        # Peticiones enviadas al RMC que esperan respuesta:
+        # uuid -> (hora de entrada, tipo, id_cliente). Sirve para medir el tiempo.
         self.pendientes: dict[str, tuple[float, str, int]] = {}
         self.metricas = RegistroMetricas(config.RAIZ / ruta_metricas)
 
     # ------------------------------------------------------------ bucle principal
     def ejecutar(self):
-        log(f"clientes en el puerto {config.GT_PUERTO_CLIENTES}, RMC en el puerto {config.GT_PUERTO_RMC}")
+        log(f"clientes en el puerto {config.GT_PUERTO_CLIENTES}, RMC en el puerto {config.GT_PUERTO_RMC}, "
+            f"cancelaciones en el puerto {config.GT_PUERTO_CANCELACION}")
         while True:
-            eventos = dict(self.poller.poll(1000))     # despierta al menos cada segundo
+            eventos = dict(self.poller.poll(1000))     # espera hasta 1 s a que llegue algo
             if self.frontend in eventos:
                 self.atender_cliente()
             if self.backend in eventos:
@@ -64,7 +87,12 @@ class GestorTransacciones:
 
         tipo = peticion.get("tipo")
         cliente = peticion.get("id_cliente")
-        if tipo not in TIPOS_SINCRONOS:
+
+        if tipo == m.CANCELACION:                      # camino asincrono
+            self.atender_cancelacion(frames, peticion)
+            return
+
+        if tipo not in TIPOS_SINCRONOS:                # tipos internos o desconocidos
             motivo = m.NO_IMPLEMENTADO if tipo in m.TIPOS else m.PETICION_INVALIDA
             self.responder_directo(frames, m.crear_respuesta(
                 peticion, m.ERROR, motivo, {"razon": f"el GT no acepta peticiones {tipo}"}))
@@ -82,6 +110,44 @@ class GestorTransacciones:
         self.pendientes[peticion.get("uuid")] = (time.perf_counter(), tipo, cliente)
         log(f"<- {tipo} del cliente {cliente}")
 
+    # ------------------------------------------------------------ cancelacion (asincrona)
+    def atender_cancelacion(self, frames, peticion):
+        """
+        Acepta la cancelacion de inmediato: la empuja al servicio de cancelacion
+        y le responde ACK al cliente SIN esperar a que se haga. El resultado real
+        le llegara al cliente despues, como NOTIFICACION.
+        """
+        inicio = time.perf_counter()
+        cliente = peticion.get("id_cliente")
+        datos = peticion.get("datos", {})
+        direccion = datos.get("direccion_notificacion")
+
+        # Revisiones minimas: sin estos datos el servicio no podria hacer su trabajo
+        if not m.es_entero_positivo(datos.get("id_reserva")):
+            respuesta = m.crear_respuesta(peticion, m.ERROR, m.DATO_INVALIDO,
+                                          {"razon": f"id_reserva invalido: {datos.get('id_reserva')}"})
+        elif not isinstance(direccion, str) or not direccion.startswith("tcp://"):
+            respuesta = m.crear_respuesta(peticion, m.ERROR, m.DATO_INVALIDO,
+                                          {"razon": f"direccion_notificacion invalida: {direccion}"})
+        else:
+            try:
+                # NOBLOCK: si el servicio de cancelacion no esta conectado, no esperar
+                self.canal_cancelacion.send(frames[-1], flags=zmq.NOBLOCK)
+                respuesta = m.crear_respuesta(peticion, m.ACK, datos={
+                    "id_reserva": datos["id_reserva"],
+                    "razon": "cancelacion recibida; se notificara cuando se haga efectiva"})
+            except zmq.Again:
+                respuesta = m.crear_respuesta(peticion, m.ERROR, m.NO_DISPONIBLE,
+                                              {"razon": "el servicio de cancelacion no esta disponible"})
+
+        self.responder_directo(frames, respuesta)
+        ms = (time.perf_counter() - inicio) * 1000
+        motivo = f" {respuesta['motivo']}" if respuesta["motivo"] else ""
+        log(f"<- CANCELACION del cliente {cliente} (reserva {datos.get('id_reserva')}) "
+            f"=> {respuesta['estado']}{motivo}")
+        self.metricas.registrar(m.CANCELACION, respuesta["estado"], respuesta["motivo"],
+                                ms, cliente, peticion.get("uuid"))
+
     # ------------------------------------------------------------ llega la respuesta de un RMC
     def atender_rmc(self):
         frames = self.backend.recv_multipart()
@@ -89,6 +155,7 @@ class GestorTransacciones:
             respuesta = m.decodificar(frames[-1])
         except ValueError:
             respuesta = {}
+        # Buscar cuando entro esta peticion para calcular cuanto tardo
         inicio, tipo, cliente = self.pendientes.pop(respuesta.get("uuid"), (None, "?", "?"))
         ms = (time.perf_counter() - inicio) * 1000 if inicio is not None else 0.0
         motivo = f" {respuesta.get('motivo')}" if respuesta.get("motivo") else ""
@@ -100,7 +167,7 @@ class GestorTransacciones:
 
     # ------------------------------------------------------------ apoyo
     def responder_directo(self, frames, respuesta):
-        """Responde al cliente desde el GT, sin pasar por el RMC."""
+        """Responde al cliente desde el GT, sin pasar por el RMC (se conserva el sobre)."""
         self.frontend.send_multipart(frames[:-1] + [m.codificar(respuesta)])
 
     def limpiar_pendientes(self):
@@ -115,4 +182,5 @@ class GestorTransacciones:
         self.metricas.cerrar()
         self.frontend.close(linger=0)
         self.backend.close(linger=0)
+        self.canal_cancelacion.close(linger=0)
         self.contexto.term()

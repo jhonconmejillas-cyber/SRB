@@ -23,12 +23,13 @@ def main():
                         help="comprobar que los ocupados coinciden con las reservas")
     args = parser.parse_args()
 
-    bd = BaseDatos()
+    bd = BaseDatos()      # solo lee: se puede usar mientras el sistema esta corriendo
     try:
         if args.verificar:
             print("Base de datos consistente" if bd.verificar()
                   else "INCONSISTENTE: hay ocurrencias cuyos ocupados no cuadran con sus reservas")
             return
+        # Sin --cada se imprime una vez; con --cada N se repite cada N segundos
         while True:
             if args.cada:
                 print("\033[2J\033[H", end="")       # limpia la pantalla de la terminal

@@ -9,6 +9,8 @@ import csv
 import time
 from pathlib import Path
 
+# Una fila por transaccion: cuando termino, de que tipo era, como salio,
+# cuanto tardo (ms), de que cliente era y su uuid.
 COLUMNAS = ["hora_fin", "tipo", "estado", "motivo", "ms", "id_cliente", "uuid"]
 
 
@@ -16,6 +18,7 @@ class RegistroMetricas:
     def __init__(self, ruta):
         self.ruta = Path(ruta)
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
+        # Se agrega al final del archivo ("a"); el encabezado solo si el archivo es nuevo
         archivo_nuevo = not self.ruta.exists()
         self.archivo = open(self.ruta, "a", newline="", encoding="utf-8")
         self.escritor = csv.writer(self.archivo)
@@ -23,6 +26,7 @@ class RegistroMetricas:
             self.escritor.writerow(COLUMNAS)
 
     def registrar(self, tipo, estado, motivo, ms, id_cliente, uuid):
+        """Escribe una fila en el CSV."""
         self.escritor.writerow([f"{time.time():.3f}", tipo, estado, motivo or "",
                                 f"{ms:.3f}", id_cliente, uuid])
         self.archivo.flush()          # que quede en disco aunque el GT se detenga de golpe

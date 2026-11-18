@@ -1,5 +1,9 @@
 """
-Proceso del Servicio de Persistencia: socket REP con bind en SP_PUERTO.
+Proceso del Servicio de Persistencia: es el unico que toca la base de datos.
+
+Abre (bind) el puerto SP_PUERTO con un socket REP: recibe una peticion,
+la resuelve con ServicioPersistencia y responde; luego espera la siguiente.
+Como atiende de a una, nunca hay dos cambios a la vez sobre la base.
 
 Uso (desde la raiz del proyecto):
     python -m capa_persistencia.main
@@ -16,24 +20,25 @@ from capa_persistencia.servicio_persistencia import ServicioPersistencia
 
 
 def log(texto):
+    """Imprime una linea con la hora. flush=True: que salga en pantalla ya."""
     print(f"[{time.strftime('%H:%M:%S')}] [PERSISTENCIA] {texto}", flush=True)
 
 
 def main():
-    bd = BaseDatos()
-    servicio = ServicioPersistencia(bd)
+    bd = BaseDatos()                           # abre el archivo de la base
+    servicio = ServicioPersistencia(bd)        # la logica (sin red)
 
     print("Estado inicial de la base de datos:")
     bd.imprimir_estado(solo_ocupadas=True)
 
-    contexto = zmq.Context()
-    socket = contexto.socket(zmq.REP)
+    contexto = zmq.Context()                   # todo programa ZeroMQ necesita un contexto
+    socket = contexto.socket(zmq.REP)          # REP = responde cada peticion que recibe
     socket.bind(config.direccion_bind(config.SP_PUERTO))
     log(f"escuchando en el puerto {config.SP_PUERTO}")
 
     try:
         while True:
-            mensaje = socket.recv()
+            mensaje = socket.recv()            # espera hasta que llegue una peticion
             peticion = {}
             try:
                 peticion = m.decodificar(mensaje)
@@ -48,12 +53,12 @@ def main():
             motivo = f" {respuesta['motivo']}" if respuesta["motivo"] else ""
             log(f"{peticion.get('tipo', 'mensaje no valido')} {peticion.get('datos', '')} "
                 f"=> {respuesta['estado']}{motivo}")
-            socket.send(m.codificar(respuesta))
-    except KeyboardInterrupt:
+            socket.send(m.codificar(respuesta))   # devuelve la respuesta a quien pregunto
+    except KeyboardInterrupt:                     # Ctrl+C: se muestra como quedo la base
         log("detenido")
         print("Estado final de la base de datos:")
         bd.imprimir_estado(solo_ocupadas=True)
-    finally:
+    finally:                                      # pase lo que pase, cerrar todo en orden
         socket.close(linger=0)
         contexto.term()
         bd.cerrar()

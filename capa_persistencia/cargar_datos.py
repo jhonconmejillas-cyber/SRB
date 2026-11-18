@@ -10,6 +10,7 @@ import sys
 
 from capa_persistencia.db import BaseDatos
 
+# Tipos de evento que se van repitiendo: E1 concierto, E2 teatro, ... E6 concierto
 TIPOS_EVENTO = ["concierto", "teatro", "futbol", "cine", "danza"]
 
 
@@ -31,6 +32,8 @@ def generar_eventos(anio=2026, mes=11, cantidad=50, dobles=20, capacidad=100):
 
 
 def main():
+    # Si se da un archivo JSON (el caso del profesor), se cargan esos eventos;
+    # si no, se generan los 50 eventos del enunciado.
     if len(sys.argv) > 1:
         with open(sys.argv[1], encoding="utf-8") as archivo:
             eventos = json.load(archivo)
@@ -40,7 +43,7 @@ def main():
         origen = "caso del enunciado"
 
     bd = BaseDatos()
-    bd.reiniciar()
+    bd.reiniciar()                    # OJO: borra todo lo que habia (reservas incluidas)
     bd.cargar_eventos(eventos)
     print(f"[CARGA] {len(eventos)} eventos cargados ({origen}) en {bd.ruta}")
     bd.imprimir_estado()

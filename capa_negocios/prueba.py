@@ -2,7 +2,7 @@
 Prueba el RMC haciendose pasar por el GT: abre el puerto GT_PUERTO_RMC con un
 REQ y le envia peticiones como lo haria un cliente.
 Requiere: BD recien cargada, persistencia corriendo y RMC corriendo.
-Uso:  python -m pruebas.prueba_rmc
+Uso:  python -m capa_negocios.prueba
 """
 import zmq
 
@@ -14,6 +14,7 @@ uuids_correctos: list[bool] = []
 
 
 def revisar(nombre, condicion):
+    """Anota si una prueba paso o fallo y lo imprime."""
     resultados.append(condicion)
     print(f"[{'PASA' if condicion else 'FALLA'}] {nombre}")
 
@@ -25,6 +26,7 @@ def main():
     socket.bind(config.direccion_bind(config.GT_PUERTO_RMC))   # hace de GT: el RMC se conecta aqui
 
     def pedir(tipo, datos, id_cliente=7):
+        """Envia una peticion al RMC (como si fuera el GT) y devuelve la respuesta."""
         peticion = m.crear_peticion(tipo, id_cliente, datos)
         socket.send(m.codificar(peticion))
         respuesta = m.decodificar(socket.recv())

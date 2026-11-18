@@ -2,7 +2,7 @@
 Prueba el Servicio de Persistencia por la red, como lo hara el RMC.
 Requiere: BD recien cargada (python -m capa_persistencia.cargar_datos)
           y el servicio corriendo (python -m capa_persistencia.main)
-Uso:  python -m pruebas.prueba_persistencia
+Uso:  python -m capa_persistencia.prueba_presistencia
 """
 import zmq
 
@@ -14,6 +14,7 @@ uuids_correctos: list[bool] = []
 
 
 def revisar(nombre, condicion):
+    """Anota si una prueba paso o fallo y lo imprime."""
     resultados.append(condicion)
     print(f"[{'PASA' if condicion else 'FALLA'}] {nombre}")
 
@@ -25,6 +26,7 @@ def main():
     socket.connect(config.direccion(config.HOST_CAPA_PERSISTENCIA, config.SP_PUERTO))
 
     def pedir(tipo, datos):
+        """Envia una peticion a la persistencia y devuelve su respuesta."""
         peticion = m.crear_peticion(tipo, 7, datos)
         socket.send(m.codificar(peticion))
         respuesta = m.decodificar(socket.recv())

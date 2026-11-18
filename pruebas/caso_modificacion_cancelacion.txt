@@ -1,0 +1,22 @@
+# Caso de prueba de modificaciones y cancelaciones.
+# R1, R2... = la 1.a, 2.a... reserva que salio bien en este archivo.
+CONSULTA noviembre
+RESERVA E1 2026/11/01 4
+RESERVA E30 2026/11/02 2
+# subir R1 a 6 asientos
+MODIFICAR R1 6
+# mover R1 a la otra fecha de E1 (conserva los 6 asientos)
+MODIFICAR R1 2026/11/15
+# rechazada: E30 ocurre una sola vez en el mes
+MODIFICAR R2 2026/11/16
+# E30 si permite cambiar los asientos
+MODIFICAR R2 5
+# rechazada: no hay 500 asientos
+MODIFICAR R1 500
+# cancelacion asincrona: responde ACK y luego llega la NOTIFICACION
+CANCELAR R2
+ESPERAR 0.5
+# rechazada (en el aviso): R2 ya estaba cancelada
+CANCELAR R2
+ESPERAR 0.5
+CONSULTA noviembre

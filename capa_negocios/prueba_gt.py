@@ -1,7 +1,7 @@
 """
 Prueba el sistema completo a traves del Gestor de Transacciones, como lo haran
 los clientes. Requiere: BD recien cargada, persistencia, al menos un RMC y el GT.
-Uso:  python -m pruebas.prueba_gt
+Uso:  python -m capa_negocios.prueba_gt
 """
 import threading
 
@@ -14,6 +14,7 @@ resultados: list[bool] = []
 
 
 def revisar(nombre, condicion):
+    """Anota si una prueba paso o fallo y lo imprime."""
     resultados.append(condicion)
     print(f"[{'PASA' if condicion else 'FALLA'}] {nombre}")
 
@@ -52,8 +53,12 @@ def main():
         revisar("reserva a traves del GT: EXITO", r["estado"] == m.EXITO)
 
         r = c.pedir(m.MODIFICACION, {})
-        revisar("MODIFICACION: el GT la rechaza con NO_IMPLEMENTADO",
-                r["estado"] == m.ERROR and r["motivo"] == m.NO_IMPLEMENTADO)
+        revisar("MODIFICACION sin datos: el RMC responde ERROR DATO_INVALIDO",
+                r["estado"] == m.ERROR and r["motivo"] == m.DATO_INVALIDO)
+
+        r = c.pedir(m.CANCELACION, {"id_reserva": 1})
+        revisar("CANCELACION sin direccion de notificacion: ERROR DATO_INVALIDO",
+                r["estado"] == m.ERROR and r["motivo"] == m.DATO_INVALIDO)
 
         r = c.pedir(m.AGREGAR_RESERVA, {"id_evento": "E1", "fecha": "2026/11/01", "n_asientos": 1})
         revisar("AGREGAR_RESERVA desde un cliente: el GT la rechaza",

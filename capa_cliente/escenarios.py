@@ -2,11 +2,10 @@
 Lanza los escenarios de la Tabla 1 del enunciado. Cada cliente es un proceso aparte.
 
   Escenario 1: 3 clientes  -> 2 solo consultan, 1 consulta y reserva
-  Escenario 2: 5 clientes  -> 3 solo consultan, 2 reservan (*)
-  Escenario 3: 8 clientes  -> 4 solo consultan, 4 reservan (*)
+  Escenario 2: 5 clientes  -> 3 solo consultan, 2 reservan y modifican
+  Escenario 3: 8 clientes  -> 4 solo consultan, 4 reservan y modifican
 
-  (*) El enunciado dice "reserva y modificacion"; la modificacion llega en la
-      segunda entrega, asi que en la arquitectura base esos clientes solo reservan.
+  Los que "reservan y modifican" hacen 70% reservas y 30% modificaciones.
 
 Uso (en la maquina de clientes, desde la raiz):
     python -m capa_cliente.escenarios --escenario 1 --etiqueta base
@@ -18,11 +17,12 @@ import sys
 
 from config import configuracion as config
 
-# escenario -> lista de (cantidad de clientes, porcentaje de consultas)
+# escenario -> lista de grupos de clientes:
+#   (cantidad de clientes, % de consultas, % de modificaciones); el resto son reservas
 ESCENARIOS = {
-    1: [(2, 100), (1, 50)],
-    2: [(3, 100), (2, 0)],
-    3: [(4, 100), (4, 0)],
+    1: [(2, 100, 0), (1, 50, 0)],
+    2: [(3, 100, 0), (2, 0, 30)],
+    3: [(4, 100, 0), (4, 0, 30)],
 }
 
 
@@ -34,26 +34,29 @@ def main():
     parser.add_argument("--por-minuto", type=float, default=20, help="peticiones por minuto por cliente")
     args = parser.parse_args()
 
-    total = sum(cantidad for cantidad, _ in ESCENARIOS[args.escenario])
+    # Carpeta de resultados, por ejemplo resultados/base_5clientes
+    total = sum(grupo[0] for grupo in ESCENARIOS[args.escenario])
     carpeta = config.RAIZ / "resultados" / f"{args.etiqueta}_{total}clientes"
     carpeta.mkdir(parents=True, exist_ok=True)
     for viejo in carpeta.glob("cliente_*.csv"):
         viejo.unlink()                     # que no se mezclen corridas anteriores
 
+    # Lanza un proceso por cliente (todos a la vez) con su propia mezcla de operaciones
     procesos = []
     id_cliente = 0
-    for cantidad, pct_consultas in ESCENARIOS[args.escenario]:
+    for cantidad, pct_consultas, pct_modificaciones in ESCENARIOS[args.escenario]:
         for _ in range(cantidad):
             id_cliente += 1
             comando = [sys.executable, "-m", "capa_cliente.main", "--id", str(id_cliente), "--carga",
                        "--duracion", str(args.duracion), "--por-minuto", str(args.por_minuto),
                        "--consultas", str(pct_consultas),
+                       "--modificaciones", str(pct_modificaciones),
                        "--salida", str(carpeta / f"cliente_{id_cliente}.csv")]
             procesos.append(subprocess.Popen(comando, cwd=config.RAIZ))
 
     print(f"Escenario {args.escenario}: {total} clientes durante {args.duracion:g} s...", flush=True)
     try:
-        for p in procesos:
+        for p in procesos:        # espera a que todos terminen
             p.wait()
     except KeyboardInterrupt:
         for p in procesos:

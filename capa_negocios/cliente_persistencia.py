@@ -1,6 +1,8 @@
 """
 Cliente de la persistencia: el socket REQ con el que el RMC le pregunta cosas
 al Servicio de Persistencia, con limite de espera y reintento.
+Tambien lo usa el servicio de cancelacion. Asi, si la persistencia se cae,
+nadie se queda esperando para siempre.
 """
 import zmq
 
@@ -21,6 +23,7 @@ class ClientePersistencia:
         self.socket = self._nuevo_socket()
 
     def _nuevo_socket(self):
+        """Crea un REQ conectado a la persistencia. LINGER 0: al cerrarlo no espera nada."""
         socket = self.contexto.socket(zmq.REQ)
         socket.setsockopt(zmq.LINGER, 0)
         socket.connect(self.direccion)
@@ -41,6 +44,7 @@ class ClientePersistencia:
             # No se puede volver a usar; se cierra y se crea uno nuevo.
             self.socket.close()
             self.socket = self._nuevo_socket()
+        # Se agotaron los intentos: quien llamo decide que responderle al cliente
         raise PersistenciaNoDisponible(f"la persistencia no respondio ({self.direccion})")
 
     def cerrar(self):
