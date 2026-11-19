@@ -38,9 +38,32 @@ def valor_opcional(nombre, por_defecto):
     return valor(nombre) if os.getenv(nombre) else por_defecto
 
 
+def lista(nombre, por_defecto):
+    """
+    Lee una variable con varios valores separados por coma, por ejemplo
+    GT_HOSTS=10.43.99.1,10.43.100.84  ->  ["10.43.99.1", "10.43.100.84"].
+    Si la variable no esta en el .env devuelve por_defecto.
+    """
+    v = os.getenv(nombre)
+    if not v:
+        return list(por_defecto)
+    return [parte.strip() for parte in v.split(",") if parte.strip()]
+
+
 def direccion(host, puerto):
     """Direccion para connect() (ir a buscar a otro): tcp://host:puerto"""
     return f"tcp://{host}:{puerto}"
+
+
+def direccion_de(entrada, puerto):
+    """
+    Como direccion(), pero la entrada puede traer su propio puerto:
+      "10.43.100.84"       -> tcp://10.43.100.84:<puerto>
+      "127.0.0.1:5569"     -> tcp://127.0.0.1:5569   (util para probar todo en un PC)
+    """
+    if ":" in entrada:
+        return f"tcp://{entrada}"
+    return direccion(entrada, puerto)
 
 
 def direccion_bind(puerto):
@@ -55,8 +78,20 @@ HOST_CAPA_PERSISTENCIA = texto("HOST_CAPA_PERSISTENCIA")   # servicio de persist
 
 # --- Puertos del Gestor de Transacciones
 GT_PUERTO_CLIENTES = valor("GT_PUERTO_CLIENTES")           # aqui llegan los clientes
-GT_PUERTO_RMC = valor("GT_PUERTO_RMC")                     # aqui se conectan los RMC
 GT_PUERTO_CANCELACION = valor("GT_PUERTO_CANCELACION")     # aqui se conecta el servicio de cancelacion
+
+# --- Replicas del GT: primero el primario (gt_1), luego el respaldo (gt_2).
+#     Los usan los clientes (para el failover) y el servicio de cancelacion
+#     (que escucha a todos los GT). Si no esta, hay un solo GT en HOST_CAPA_SERVICIOS.
+GT_HOSTS = lista("GT_HOSTS", [HOST_CAPA_SERVICIOS])
+
+# --- Broker ROUTER/DEALER (uno en cada maquina de negocio)
+#     El GT se conecta al broker de SU maquina (BROKER_HOST : BROKER_PUERTO_GT).
+#     Los RMC se conectan a TODOS los brokers (BROKERS : BROKER_PUERTO_RMC).
+BROKER_PUERTO_GT = valor_opcional("BROKER_PUERTO_GT", 5559)
+BROKER_PUERTO_RMC = valor_opcional("BROKER_PUERTO_RMC", valor_opcional("GT_PUERTO_RMC", 5556))
+BROKER_HOST = os.getenv("BROKER_HOST") or "127.0.0.1"      # normalmente la misma maquina del GT
+BROKERS = lista("BROKERS", [HOST_CAPA_SERVICIOS])
 
 # --- Persistencia
 SP_PUERTO = valor("SP_PUERTO")
@@ -78,9 +113,10 @@ if __name__ == "__main__":
     print("  Consumidores :", HOST_CAPA_CONSUMIDORES)
     print("  Servicios    :", HOST_CAPA_SERVICIOS)
     print("  Persistencia :", HOST_CAPA_PERSISTENCIA)
-    print("  GT clientes  :", direccion(HOST_CAPA_SERVICIOS, GT_PUERTO_CLIENTES))
-    print("  GT para RMC  :", direccion(HOST_CAPA_SERVICIOS, GT_PUERTO_RMC))
-    print("  GT cancelac. :", direccion(HOST_CAPA_SERVICIOS, GT_PUERTO_CANCELACION))
+    print("  GT (clientes):", [direccion_de(h, GT_PUERTO_CLIENTES) for h in GT_HOSTS])
+    print("  GT cancelac. :", [direccion_de(h, GT_PUERTO_CANCELACION) for h in GT_HOSTS])
+    print("  Broker del GT:", direccion(BROKER_HOST, BROKER_PUERTO_GT))
+    print("  Brokers (RMC):", [direccion_de(h, BROKER_PUERTO_RMC) for h in BROKERS])
     print("  Persistencia :", direccion(HOST_CAPA_PERSISTENCIA, SP_PUERTO))
     print("  Notificac.   :", f"puertos {CLIENTE_PUERTO_NOTIF_MIN}-{CLIENTE_PUERTO_NOTIF_MAX}")
     print("  Base de datos:", BD_RUTA)

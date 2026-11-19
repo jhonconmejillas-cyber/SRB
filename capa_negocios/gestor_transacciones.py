@@ -7,16 +7,18 @@ por uno de dos caminos:
   Canal SINCRONO (CONSULTA, RESERVA, MODIFICACION): se reenvia a un RMC y la
   respuesta del RMC se le devuelve al cliente.
 
-      clientes (REQ) --> [ROUTER :GT_PUERTO_CLIENTES]  GT  [DEALER :GT_PUERTO_RMC] <-- RMC (REP)
+      clientes (REQ) --> [ROUTER :GT_PUERTO_CLIENTES]  GT  [DEALER] --connect--> BROKER --> RMC (REP) x N
 
   Canal ASINCRONO (CANCELACION): se contesta de una vez "ACK" (recibido) al
   cliente y la peticion se empuja al Servicio de Cancelacion, sin esperarlo.
 
       GT [PUSH :GT_PUERTO_CANCELACION] --> Servicio de Cancelacion (PULL)
 
-El GT hace bind (abre el puerto) en los tres lados: los clientes, los RMC y el
-servicio de cancelacion lo buscan a el. Para agregar una replica del RMC basta
-con arrancarla; el DEALER reparte las peticiones entre todos los RMC conectados.
+El GT abre (bind) el puerto de los clientes y el de cancelaciones. Hacia los
+RMC ya no abre nada: se CONECTA al broker de su propia maquina (BROKER_HOST),
+y el broker reparte entre todos los RMC. Asi se pueden lanzar N RMC sin tocar
+el GT. El GT tampoco guarda datos: todo esta en la base. Por eso puede haber
+dos GT (gt_1 primario y gt_2 respaldo) y el cliente puede pasar de uno a otro.
 """
 import time
 
@@ -35,7 +37,8 @@ def log(texto):
 
 
 class GestorTransacciones:
-    def __init__(self, ruta_metricas="resultados/gt_metricas.csv"):
+    def __init__(self, ruta_metricas="resultados/gt_metricas.csv", broker=None):
+        """broker: "tcp://IP:puerto" del broker; por defecto el del .env (BROKER_HOST)."""
         self.contexto = zmq.Context()
 
         # ROUTER: puede atender a muchos clientes a la vez y recuerda quien envio
@@ -43,9 +46,16 @@ class GestorTransacciones:
         self.frontend = self.contexto.socket(zmq.ROUTER)      # lado de los clientes
         self.frontend.bind(config.direccion_bind(config.GT_PUERTO_CLIENTES))
 
-        # DEALER: reparte las peticiones entre los RMC conectados (por turnos).
-        self.backend = self.contexto.socket(zmq.DEALER)       # lado de los RMC
-        self.backend.bind(config.direccion_bind(config.GT_PUERTO_RMC))
+        # DEALER conectado al broker (lado de los RMC). El sobre del cliente
+        # (su identidad) viaja intacto hasta el RMC y vuelve con la respuesta.
+        # IMMEDIATE: si el broker no esta conectado, send() falla de una vez
+        # (zmq.Again) en vez de guardar el mensaje; asi el cliente recibe un
+        # ERROR NO_DISPONIBLE y no se queda esperando.
+        self.direccion_broker = broker or config.direccion(config.BROKER_HOST, config.BROKER_PUERTO_GT)
+        self.backend = self.contexto.socket(zmq.DEALER)
+        self.backend.setsockopt(zmq.IMMEDIATE, 1)
+        self.backend.setsockopt(zmq.LINGER, 0)
+        self.backend.connect(self.direccion_broker)
 
         # PUSH: empuja cancelaciones al servicio de cancelacion, sin esperar respuesta.
         self.canal_cancelacion = self.contexto.socket(zmq.PUSH)
@@ -64,7 +74,7 @@ class GestorTransacciones:
 
     # ------------------------------------------------------------ bucle principal
     def ejecutar(self):
-        log(f"clientes en el puerto {config.GT_PUERTO_CLIENTES}, RMC en el puerto {config.GT_PUERTO_RMC}, "
+        log(f"clientes en el puerto {config.GT_PUERTO_CLIENTES}, broker en {self.direccion_broker}, "
             f"cancelaciones en el puerto {config.GT_PUERTO_CANCELACION}")
         while True:
             eventos = dict(self.poller.poll(1000))     # espera hasta 1 s a que llegue algo
@@ -100,12 +110,12 @@ class GestorTransacciones:
             return
 
         try:
-            # NOBLOCK: si no hay ningun RMC conectado, no esperar; avisar al cliente
+            # NOBLOCK: si el broker no esta conectado, no esperar; avisar al cliente
             self.backend.send_multipart(frames, flags=zmq.NOBLOCK)   # el sobre viaja intacto
         except zmq.Again:
             self.responder_directo(frames, m.crear_respuesta(
-                peticion, m.ERROR, m.NO_DISPONIBLE, {"razon": "no hay ningun RMC conectado"}))
-            log(f"rechazada {tipo} del cliente {cliente}: no hay RMC conectado")
+                peticion, m.ERROR, m.NO_DISPONIBLE, {"razon": "el broker de los RMC no esta conectado"}))
+            log(f"rechazada {tipo} del cliente {cliente}: broker no conectado")
             return
         self.pendientes[peticion.get("uuid")] = (time.perf_counter(), tipo, cliente)
         log(f"<- {tipo} del cliente {cliente}")

@@ -63,9 +63,10 @@ def main():
     carpeta_logs = config.RAIZ / "resultados"
     carpeta_logs.mkdir(exist_ok=True)
     logs = {n: open(carpeta_logs / f"prueba_{n}.log", "w", encoding="utf-8")
-            for n in ("persistencia", "gt", "rmc", "cancelacion")}
+            for n in ("persistencia", "broker", "gt", "rmc", "cancelacion")}
     procesos = {
         "persistencia": arrancar("capa_persistencia.main", log=logs["persistencia"]),
+        "broker": arrancar("capa_negocios.main", "broker", log=logs["broker"]),
         "gt": arrancar("capa_negocios.main", "gt", log=logs["gt"]),
         "rmc": arrancar("capa_negocios.main", "rmc", log=logs["rmc"]),
         "cancelacion": arrancar("capa_negocios.main", "cancelacion", log=logs["cancelacion"]),

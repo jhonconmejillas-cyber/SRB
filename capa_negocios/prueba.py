@@ -1,5 +1,5 @@
 """
-Prueba el RMC haciendose pasar por el GT: abre el puerto GT_PUERTO_RMC con un
+Prueba el RMC haciendose pasar por el GT: abre el puerto BROKER_PUERTO_RMC con un
 REQ y le envia peticiones como lo haria un cliente.
 Requiere: BD recien cargada, persistencia corriendo y RMC corriendo.
 Uso:  python -m capa_negocios.prueba
@@ -23,7 +23,7 @@ def main():
     contexto = zmq.Context()
     socket = contexto.socket(zmq.REQ)
     socket.setsockopt(zmq.RCVTIMEO, config.TIMEOUT_MS)
-    socket.bind(config.direccion_bind(config.GT_PUERTO_RMC))   # hace de GT: el RMC se conecta aqui
+    socket.bind(config.direccion_bind(config.BROKER_PUERTO_RMC))   # hace de broker: el RMC se conecta aqui
 
     def pedir(tipo, datos, id_cliente=7):
         """Envia una peticion al RMC (como si fuera el GT) y devuelve la respuesta."""
