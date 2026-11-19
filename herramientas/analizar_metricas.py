@@ -184,9 +184,12 @@ def guardar_csv(resultados, ruta):
 
 def graficar(resultados, carpeta_salida):
     """
-    Dos graficas (una por medida, nunca dos ejes en la misma):
-      grafica_tpm.png:    TPM contra numero de clientes, una linea por cantidad de RMC
-      grafica_tiempo.png: tiempo promedio de respuesta contra clientes, una linea por RMC
+    Una grafica por medida (nunca dos ejes en la misma), todas contra el numero de
+    clientes y con una linea por arquitectura (1 RMC = base, mas RMC = escalable):
+      grafica_tpm.png, grafica_tiempo.png:   totales
+      grafica_tiempo_consulta.png, grafica_tiempo_reserva.png:  variables 1 y 2 de la
+          Tabla 1 (promedio, con barras de +- desviacion estandar)
+      grafica_tpm_consulta.png, grafica_tpm_reserva.png:  variables 3 y 4 de la Tabla 1
     """
     try:
         import matplotlib
@@ -202,23 +205,38 @@ def graficar(resultados, carpeta_salida):
         return
     cantidades_rmc = sorted({r["rmc"] for r in con_rmc})
 
-    medidas = [("tpm", "Transacciones por minuto (TPM)", "TPM", "grafica_tpm.png"),
-               ("ms_promedio", "Tiempo promedio de respuesta", "milisegundos", "grafica_tiempo.png")]
-    for clave, titulo, eje_y, archivo in medidas:
+    # (clave, clave de la desviacion o None, titulo, eje y, archivo)
+    medidas = [
+        ("tpm", None, "Transacciones por minuto (TPM), total", "TPM", "grafica_tpm.png"),
+        ("ms_promedio", None, "Tiempo promedio de respuesta, total", "milisegundos", "grafica_tiempo.png"),
+        ("ms_consulta", "desv_consulta", "Tiempo de respuesta de las consultas (promedio +- desv. estandar)",
+         "milisegundos", "grafica_tiempo_consulta.png"),
+        ("ms_reserva", "desv_reserva", "Tiempo de respuesta de las reservas (promedio +- desv. estandar)",
+         "milisegundos", "grafica_tiempo_reserva.png"),
+        ("tpm_consulta", None, "Consultas procesadas por minuto (TPM)", "TPM", "grafica_tpm_consulta.png"),
+        ("tpm_reserva", None, "Reservas procesadas por minuto (TPM)", "TPM", "grafica_tpm_reserva.png"),
+    ]
+    for clave, clave_desv, titulo, eje_y, archivo in medidas:
         figura, eje = plt.subplots(figsize=(7, 4.2), dpi=150)
         figura.patch.set_facecolor("#fcfcfb")
         eje.set_facecolor("#fcfcfb")
         for i, n_rmc in enumerate(cantidades_rmc):
-            puntos = sorted((r["clientes"], r[clave]) for r in con_rmc if r["rmc"] == n_rmc)
-            x = [p[0] for p in puntos]
-            y = [p[1] for p in puntos]
+            filas = sorted((r for r in con_rmc if r["rmc"] == n_rmc), key=lambda r: r["clientes"])
+            x = [r["clientes"] for r in filas]
+            y = [r[clave] for r in filas]
             color = COLORES[i % len(COLORES)]
-            nombre = f"{n_rmc} RMC"
-            eje.plot(x, y, color=color, linewidth=2, marker=MARCADORES[i % len(MARCADORES)],
-                     markersize=7, markeredgecolor="#fcfcfb", markeredgewidth=1.5, label=nombre)
-            # etiqueta directa al final de cada linea (en tinta de texto, no del color)
-            eje.annotate(nombre, (x[-1], y[-1]), xytext=(8, 0), textcoords="offset points",
-                         va="center", fontsize=9, color="#52514e")
+            nombre = f"Base ({n_rmc} RMC)" if n_rmc == 1 else f"Escalable ({n_rmc} RMC)"
+            # Cada arquitectura se corre un poco a un lado: si dan valores iguales (el TPM
+            # suele coincidir) se ven las dos lineas, y las barras de error no se tapan
+            desplazamiento = (i - (len(cantidades_rmc) - 1) / 2) * 0.12
+            x = [v + desplazamiento for v in x]
+            if clave_desv:     # barras de error = +- desviacion estandar
+                eje.errorbar(x, y, yerr=[r[clave_desv] for r in filas],
+                             fmt="none", ecolor=color, elinewidth=1.2, capsize=4, alpha=0.7)
+            # linea continua para la base, discontinua para la escalable
+            eje.plot(x, y, color=color, linewidth=2, linestyle="-" if i == 0 else "--",
+                     marker=MARCADORES[i % len(MARCADORES)], markersize=7,
+                     markeredgecolor="#fcfcfb", markeredgewidth=1.5, label=nombre)
         eje.set_title(titulo, loc="left", fontsize=12, color="#0b0b0b")
         eje.set_xlabel("Clientes concurrentes", color="#52514e")
         eje.set_ylabel(eje_y, color="#52514e")
@@ -231,8 +249,7 @@ def graficar(resultados, carpeta_salida):
         for lado in ("left", "bottom"):
             eje.spines[lado].set_color("#c3c2b7")
         eje.tick_params(colors="#52514e")
-        if len(cantidades_rmc) > 1:
-            eje.legend(frameon=False, loc="upper left", fontsize=9)
+        eje.legend(frameon=False, loc="upper left", fontsize=9)
         figura.tight_layout()
         ruta = Path(carpeta_salida) / archivo
         figura.savefig(ruta)
