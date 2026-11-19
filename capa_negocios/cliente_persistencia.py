@@ -32,8 +32,9 @@ class ClientePersistencia:
     def enviar(self, peticion, reintentar=True):
         """
         Envia una peticion y devuelve la respuesta.
-        reintentar=False para operaciones que cambian datos: si la primera llego
-        pero su respuesta se perdio, reintentar haria la reserva dos veces.
+        Si no llega respuesta se reintenta. Es seguro tambien para las escrituras:
+        el reintento lleva el mismo uuid y la persistencia no la hace dos veces.
+        reintentar=False: un solo intento.
         """
         intentos = 1 + (self.reintentos if reintentar else 0)
         for _ in range(intentos):

@@ -44,13 +44,14 @@ class ServicioCancelacion:
             resultado = m.crear_respuesta(peticion, m.ERROR, m.DATO_INVALIDO,
                                           {"razon": f"id_reserva debe ser un entero mayor que 0: {id_reserva}"})
         else:
-            # Se usa el mismo uuid de la cancelacion para poder seguirla en los logs
+            # Se usa el mismo uuid de la cancelacion: sirve para seguirla en los
+            # logs y para que la persistencia reconozca un reintento. Si la orden
+            # llega dos veces (se perdio una respuesta, o el cliente la repitio por
+            # otro GT), la segunda recibe el mismo EXITO y no "ya estaba cancelada".
             orden = m.crear_peticion(m.CANCELAR_RESERVA, peticion["id_cliente"],
                                      {"id_reserva": id_reserva}, peticion["uuid"])
             try:
-                # reintentar=False: si la primera orden SI llego pero se perdio la
-                # respuesta, un reintento diria "ya estaba cancelada" y confundiria.
-                resultado = self.persistencia.enviar(orden, reintentar=False)
+                resultado = self.persistencia.enviar(orden)
             except PersistenciaNoDisponible as e:
                 resultado = m.crear_respuesta(peticion, m.ERROR, m.NO_DISPONIBLE, {"razon": str(e)})
 

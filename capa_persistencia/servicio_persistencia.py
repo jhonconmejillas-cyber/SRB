@@ -9,6 +9,11 @@ Peticiones que atiende:
   CONSULTA_RESERVA         {"id_reserva": 3}
   MODIFICAR_RESERVA        {"id_reserva": 3, "fecha": "2026/11/15", "n_asientos": 5}
   CANCELAR_RESERVA         {"id_reserva": 3}
+  CONSULTA_OPERACION       {"tipo": "AGREGAR_RESERVA"}   (con el uuid de la peticion original)
+
+Reintentos: las escrituras (agregar, modificar, cancelar) se anotan con su
+uuid. Si llega otra vez la misma (mismo uuid y tipo), NO se vuelve a hacer:
+se responde lo mismo que la primera vez.
 """
 import sqlite3
 
@@ -31,6 +36,7 @@ class ServicioPersistencia:
             mensaje.CONSULTA_RESERVA: self.consultar_reserva,
             mensaje.MODIFICAR_RESERVA: self.modificar_reserva,
             mensaje.CANCELAR_RESERVA: self.cancelar_reserva,
+            mensaje.CONSULTA_OPERACION: self.consultar_operacion,
         }
 
     def atender(self, peticion):
@@ -42,6 +48,11 @@ class ServicioPersistencia:
         if operacion is None:
             return mensaje.crear_respuesta(peticion, mensaje.ERROR, mensaje.PETICION_INVALIDA,
                                            {"razon": f"tipo no atendido: {peticion.get('tipo')}"})
+        # Si es una escritura repetida, responder lo que se respondio la primera vez
+        if peticion["tipo"] in mensaje.ESCRITURAS:
+            anterior = self.db.operacion_hecha(peticion.get("uuid"), peticion["tipo"])
+            if anterior is not None:
+                return mensaje.crear_respuesta(peticion, mensaje.EXITO, datos=anterior)
         try:
             return operacion(peticion)
         except DatoInvalido as e:     # algo mal escrito -> ERROR
@@ -74,7 +85,8 @@ class ServicioPersistencia:
     def agregar_reserva(self, peticion):
         id_evento, fecha = leer_evento_y_fecha(peticion)
         n_asientos = leer_asientos(peticion)
-        reserva = self.db.agregar_reserva(peticion["id_cliente"], id_evento, fecha, n_asientos)
+        reserva = self.db.agregar_reserva(peticion["id_cliente"], id_evento, fecha, n_asientos,
+                                          uuid=peticion.get("uuid"))
         return mensaje.crear_respuesta(peticion, mensaje.EXITO, datos=reserva)
 
     def consultar_reserva(self, peticion):
@@ -87,13 +99,26 @@ class ServicioPersistencia:
         id_reserva = leer_id_reserva(peticion)
         fecha = leer_fecha(peticion)
         n_asientos = leer_asientos(peticion)
-        reserva = self.db.modificar_reserva(peticion["id_cliente"], id_reserva, fecha, n_asientos)
+        reserva = self.db.modificar_reserva(peticion["id_cliente"], id_reserva, fecha, n_asientos,
+                                            uuid=peticion.get("uuid"))
         return mensaje.crear_respuesta(peticion, mensaje.EXITO, datos=reserva)
 
     def cancelar_reserva(self, peticion):
         id_reserva = leer_id_reserva(peticion)
-        resultado = self.db.cancelar_reserva(peticion["id_cliente"], id_reserva)
+        resultado = self.db.cancelar_reserva(peticion["id_cliente"], id_reserva,
+                                             uuid=peticion.get("uuid"))
         return mensaje.crear_respuesta(peticion, mensaje.EXITO, datos=resultado)
+
+    def consultar_operacion(self, peticion):
+        """Dice si la escritura datos.tipo con este uuid ya se hizo (y que dio)."""
+        tipo = peticion["datos"].get("tipo")
+        if tipo not in mensaje.ESCRITURAS:
+            raise DatoInvalido(f"tipo de escritura invalido: {tipo}")
+        anterior = self.db.operacion_hecha(peticion.get("uuid"), tipo)
+        if anterior is None:
+            return mensaje.crear_respuesta(peticion, mensaje.FALLO, mensaje.NO_EXISTE,
+                                           {"razon": "esa operacion no se ha hecho"})
+        return mensaje.crear_respuesta(peticion, mensaje.EXITO, datos=anterior)
 
 
 # ---------------------------------------------------------------- lectura de datos

@@ -132,10 +132,11 @@ def main():
         revisar(f"el cliente cambio de GT una vez ({trabajador.cambios})", trabajador.cambios == 1)
         revisar("despues de la caida todas van por gt_2", bool(despues) and all(g == 2 for g in despues))
         revisar(f"la peor espera durante el failover fue acotada ({peor:.0f} ms < 4000 ms)", peor < 4000)
+        # La reserva que iba "en vuelo" cuando murio gt_1 SI se hizo en la base,
+        # pero su respuesta se perdio. El cliente la reintento por gt_2 con el
+        # mismo uuid y la persistencia la reconocio: no hay duplicados.
         en_bd = reservas_en_bd(2)
-        print(f"      reservas del cliente 2: {exitos} con EXITO, {en_bd} en la base"
-              + ("" if en_bd == exitos else
-                 f"  <- {en_bd - exitos} duplicada(s): la peticion en vuelo se hizo y se reintento"))
+        revisar(f"sin duplicados: {exitos} reservas con EXITO y {en_bd} en la base", en_bd == exitos)
 
         # ------------------------------------------- cancelacion por gt_2
         print("\n--- cliente 1 cancela (gt_1 ya no esta)")

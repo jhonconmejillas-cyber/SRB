@@ -8,6 +8,11 @@ Tablas:
   reserva     (id, id_cliente, ocurrencia_id, numero_puestos, activa)
               -> quien reservo cuantos puestos y en que ocurrencia.
                  activa = 1 si sigue vigente, 0 si se cancelo.
+  operacion   (uuid, tipo, id_cliente, resultado)
+              -> las escrituras que ya se hicieron, con su resultado. Sirve
+                 para reconocer un reintento: si el cliente repite una
+                 peticion (mismo uuid) porque no le llego la respuesta, se
+                 devuelve el resultado guardado en vez de hacerla otra vez.
 
 Las fechas se guardan como texto 'AAAA/MM/DD', el mismo formato del protocolo.
 
@@ -16,6 +21,7 @@ de los puestos de sus reservas activas. Todos los cambios se hacen dentro de
 una transaccion ("with self.conexion:"), asi que si algo falla a mitad de
 camino SQLite deshace todo y la base queda como estaba.
 """
+import json
 import sqlite3
 from config import configuracion
 
@@ -44,6 +50,14 @@ CREATE TABLE IF NOT EXISTS reserva (
     numero_puestos INTEGER NOT NULL CHECK (numero_puestos > 0),
     activa         INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS operacion (
+    uuid       TEXT    NOT NULL,
+    tipo       TEXT    NOT NULL,
+    id_cliente INTEGER NOT NULL,
+    resultado  TEXT    NOT NULL,          -- JSON con los datos de la respuesta EXITO
+    PRIMARY KEY (uuid, tipo)              -- la misma peticion no se puede anotar dos veces
+);
 """
 
 
@@ -63,6 +77,7 @@ class BaseDatos:
         """Borra todos los datos y deja las tablas vacias."""
         with self.conexion:
             self.conexion.executescript("""
+                DROP TABLE IF EXISTS operacion;
                 DROP TABLE IF EXISTS reserva;
                 DROP TABLE IF EXISTS ocurrencia;
                 DROP TABLE IF EXISTS evento;
@@ -131,6 +146,30 @@ class BaseDatos:
             raise NoExiste(f"el cliente {id_cliente} no tiene una reserva activa con id {id_reserva}")
         return dict(fila)
 
+    # ================================================================ reintentos (idempotencia)
+    def operacion_hecha(self, uuid, tipo):
+        """
+        Si la escritura 'tipo' con ese uuid ya se hizo, devuelve el resultado que
+        dio entonces (dict). Si no se ha hecho, devuelve None.
+        """
+        if not uuid:
+            return None
+        fila = self.conexion.execute(
+            "SELECT resultado FROM operacion WHERE uuid = ? AND tipo = ?", (uuid, tipo)).fetchone()
+        return json.loads(fila["resultado"]) if fila else None
+
+    def _anotar(self, uuid, tipo, id_cliente, resultado):
+        """
+        Guarda que esta escritura ya se hizo. Se llama DENTRO de la misma
+        transaccion de la escritura: o quedan las dos cosas o ninguna. Asi nunca
+        hay una reserva hecha sin anotar (que se duplicaria al reintentar), ni
+        una anotada sin hacer.
+        """
+        if uuid:
+            self.conexion.execute(
+                "INSERT INTO operacion (uuid, tipo, id_cliente, resultado) VALUES (?, ?, ?, ?)",
+                (uuid, tipo, id_cliente, json.dumps(resultado)))
+
     # ================================================================ cambios
     def _ocupar(self, ocurrencia_id, n_asientos, id_evento, fecha):
         """
@@ -165,10 +204,11 @@ class BaseDatos:
             raise NoExiste(f"{id_evento} no tiene ocurrencia el {fecha}")
         return fila["id"]
 
-    def agregar_reserva(self, id_cliente, id_evento, fecha, n_asientos):
+    def agregar_reserva(self, id_cliente, id_evento, fecha, n_asientos, uuid=None):
         """
         Ocupa n_asientos y registra la reserva, todo en una transaccion.
         Lanza NoExiste o SinCupo; en ese caso no cambia nada.
+        uuid: si se da, la operacion queda anotada (ver operacion_hecha).
         """
         with self.conexion:
             ocurrencia_id = self._buscar_ocurrencia(id_evento, fecha)
@@ -177,10 +217,12 @@ class BaseDatos:
                 INSERT INTO reserva (id_cliente, ocurrencia_id, numero_puestos)
                 VALUES (?, ?, ?)
             """, (id_cliente, ocurrencia_id, n_asientos))
-            return {"id_reserva": cursor.lastrowid, "id_cliente": id_cliente,
-                    "id_evento": id_evento, "fecha": fecha, "n_asientos": n_asientos}
+            resultado = {"id_reserva": cursor.lastrowid, "id_cliente": id_cliente,
+                         "id_evento": id_evento, "fecha": fecha, "n_asientos": n_asientos}
+            self._anotar(uuid, "AGREGAR_RESERVA", id_cliente, resultado)
+            return resultado
 
-    def modificar_reserva(self, id_cliente, id_reserva, nueva_fecha, nuevos_asientos):
+    def modificar_reserva(self, id_cliente, id_reserva, nueva_fecha, nuevos_asientos, uuid=None):
         """
         Cambia una reserva para que quede en 'nueva_fecha' (del MISMO evento) con
         'nuevos_asientos'. Todo en una transaccion: si no hay cupo o la fecha no
@@ -215,11 +257,13 @@ class BaseDatos:
             self.conexion.execute(
                 "UPDATE reserva SET ocurrencia_id = ?, numero_puestos = ? WHERE id = ?",
                 (nueva_id, nuevos_asientos, id_reserva))
-            return {"id_reserva": id_reserva, "id_cliente": id_cliente, "id_evento": id_evento,
-                    "fecha": nueva_fecha, "n_asientos": nuevos_asientos,
-                    "antes": {"fecha": actual["fecha"], "n_asientos": viejos_asientos}}
+            resultado = {"id_reserva": id_reserva, "id_cliente": id_cliente, "id_evento": id_evento,
+                         "fecha": nueva_fecha, "n_asientos": nuevos_asientos,
+                         "antes": {"fecha": actual["fecha"], "n_asientos": viejos_asientos}}
+            self._anotar(uuid, "MODIFICAR_RESERVA", id_cliente, resultado)
+            return resultado
 
-    def cancelar_reserva(self, id_cliente, id_reserva):
+    def cancelar_reserva(self, id_cliente, id_reserva, uuid=None):
         """
         Desactiva la reserva y libera sus asientos, en una transaccion.
         Lanza NoExiste si la reserva no existe, ya estaba cancelada o es de otro cliente.
@@ -232,9 +276,11 @@ class BaseDatos:
             if cursor.rowcount == 0:
                 raise NoExiste(f"la reserva {id_reserva} ya estaba cancelada")
             self._liberar(actual["ocurrencia_id"], actual["n_asientos"])
-            return {"id_reserva": id_reserva, "id_cliente": id_cliente,
-                    "id_evento": actual["id_evento"], "fecha": actual["fecha"],
-                    "asientos_liberados": actual["n_asientos"]}
+            resultado = {"id_reserva": id_reserva, "id_cliente": id_cliente,
+                         "id_evento": actual["id_evento"], "fecha": actual["fecha"],
+                         "asientos_liberados": actual["n_asientos"]}
+            self._anotar(uuid, "CANCELAR_RESERVA", id_cliente, resultado)
+            return resultado
 
     # ================================================================ revision y vista
     def verificar(self):

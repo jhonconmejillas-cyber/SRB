@@ -31,13 +31,30 @@ class ServicioRMC:
             # la persistencia no contesto: se le avisa al cliente con un ERROR
             return m.crear_respuesta(peticion, m.ERROR, m.NO_DISPONIBLE, {"razon": str(e)})
 
-    def _preguntar(self, tipo, peticion, datos, reintentar=True):
+    def _preguntar(self, tipo, peticion, datos):
         """
         Le hace una pregunta a la persistencia en nombre del cliente.
-        Usa el mismo uuid de la peticion original para poder seguirla en los logs.
+        Usa el mismo uuid de la peticion original: sirve para seguirla en los
+        logs y, en las escrituras, para que la persistencia reconozca un reintento.
+        Por eso ahora TODAS se pueden reintentar sin miedo a duplicar.
         """
         consulta = m.crear_peticion(tipo, peticion["id_cliente"], datos, peticion["uuid"])
-        return self.persistencia.enviar(consulta, reintentar=reintentar)
+        return self.persistencia.enviar(consulta)
+
+    def _ya_hecha(self, peticion, escritura):
+        """
+        Reintentos: si el cliente repite una peticion (mismo uuid) porque no le
+        llego la respuesta, puede que la primera SI se haya hecho. Se pregunta
+        primero a la persistencia; si ya se hizo, se responde lo mismo que la
+        primera vez. Hay que preguntarlo ANTES de revisar el cupo: si no, una
+        reserva ya hecha podria responder "sin cupo" (porque ella misma lleno el
+        evento) o una modificacion ya hecha "no cambia nada".
+        Devuelve la respuesta a enviar, o None si hay que hacer la operacion.
+        """
+        previa = self._preguntar(m.CONSULTA_OPERACION, peticion, {"tipo": escritura})
+        if previa["estado"] == m.EXITO:
+            return m.crear_respuesta(peticion, m.EXITO, datos=previa["datos"])
+        return None
 
     # ------------------------------------------------------------ CONSULTA
     # datos: {"mes": "noviembre"}
@@ -54,6 +71,11 @@ class ServicioRMC:
             return m.crear_respuesta(peticion, m.ERROR, m.DATO_INVALIDO,
                                      {"razon": f"n_asientos debe ser un entero mayor que 0: {n_asientos}"})
 
+        # 1b. si es un reintento de una reserva que ya se hizo, devolver la misma
+        repetida = self._ya_hecha(peticion, m.AGREGAR_RESERVA)
+        if repetida:
+            return repetida
+
         # 2. consultar la disponibilidad en tiempo real
         disponibilidad = self._preguntar(m.CONSULTA_DISPONIBILIDAD, peticion,
                                          {"id_evento": datos.get("id_evento"), "fecha": datos.get("fecha")})
@@ -67,9 +89,10 @@ class ServicioRMC:
 
         # 3. confirmar. La persistencia vuelve a revisar el cupo en una sola
         #    instruccion, porque otro cliente pudo reservar entre el paso 2 y este.
-        #    reintentar=False: si se repitiera, la reserva podria quedar doble.
+        #    Si se pierde la respuesta y se reintenta, la persistencia reconoce
+        #    el uuid y no la hace dos veces.
         # 4. responder lo que diga la persistencia (EXITO o FALLO SIN_CUPO)
-        return self._preguntar(m.AGREGAR_RESERVA, peticion, datos, reintentar=False)
+        return self._preguntar(m.AGREGAR_RESERVA, peticion, datos)
 
     # ------------------------------------------------------------ MODIFICACION
     # datos: {"id_reserva": 3, "n_asientos": 5}            cambia los asientos
@@ -95,6 +118,11 @@ class ServicioRMC:
             except ValueError:
                 return m.crear_respuesta(peticion, m.ERROR, m.DATO_INVALIDO,
                                          {"razon": f"fecha invalida: {datos['fecha']} (formato AAAA/MM/DD)"})
+
+        # 1b. si es un reintento de una modificacion que ya se hizo, devolver la misma
+        repetida = self._ya_hecha(peticion, m.MODIFICAR_RESERVA)
+        if repetida:
+            return repetida
 
         # 2a. traer la reserva actual (de que evento es, que fecha y cuantos asientos)
         actual = self._preguntar(m.CONSULTA_RESERVA, peticion, {"id_reserva": id_reserva})
@@ -135,5 +163,4 @@ class ServicioRMC:
         #    vez, todo en una transaccion). 4. responder EXITO o FALLO.
         return self._preguntar(m.MODIFICAR_RESERVA, peticion,
                                {"id_reserva": id_reserva, "fecha": nueva_fecha,
-                                "n_asientos": nuevos_asientos},
-                               reintentar=False)
+                                "n_asientos": nuevos_asientos})

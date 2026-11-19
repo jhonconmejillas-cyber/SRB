@@ -82,6 +82,11 @@ MODIFICAR_RESERVA = "MODIFICAR_RESERVA"
 #                                   datos: {"id_reserva": 3}
 CANCELAR_RESERVA = "CANCELAR_RESERVA"
 
+# Preguntar si una escritura ya se hizo (para reconocer reintentos). Lleva el
+# uuid de la peticion original.  datos: {"tipo": "AGREGAR_RESERVA"}
+# Responde EXITO con los datos que dio esa escritura, o FALLO NO_EXISTE.
+CONSULTA_OPERACION = "CONSULTA_OPERACION"
+
 # Aviso que el Servicio de Cancelacion le manda al cliente cuando ya termino.
 # Tiene forma de respuesta (uuid de la cancelacion, estado, motivo, datos)
 # mas el campo "tipo": "NOTIFICACION".
@@ -89,7 +94,10 @@ NOTIFICACION = "NOTIFICACION"
 
 TIPOS = {CONSULTA, RESERVA, MODIFICACION, CANCELACION,
          CONSULTA_DISPONIBILIDAD, AGREGAR_RESERVA, CONSULTA_RESERVA,
-         MODIFICAR_RESERVA, CANCELAR_RESERVA, NOTIFICACION}
+         MODIFICAR_RESERVA, CANCELAR_RESERVA, CONSULTA_OPERACION, NOTIFICACION}
+
+# Las escrituras: cambian la base, asi que un reintento no debe repetirlas
+ESCRITURAS = {AGREGAR_RESERVA, MODIFICAR_RESERVA, CANCELAR_RESERVA}
 
 
 # ======================================================================
