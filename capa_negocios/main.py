@@ -147,6 +147,8 @@ def separar(texto):
 
 
 if __name__ == "__main__":
+    # --- leer de la linea de comandos que proceso arrancar y, si se dan,
+    #     las direcciones que reemplazan a las del .env
     parser = argparse.ArgumentParser(description="Procesos de la capa de negocio")
     parser.add_argument("proceso", choices=["broker", "gt", "rmc", "cancelacion"])
     parser.add_argument("--broker", help="(gt) direccion del broker, ej. tcp://127.0.0.1:5559")
@@ -154,6 +156,7 @@ if __name__ == "__main__":
     parser.add_argument("--gts", help="(cancelacion) IP de los GT separadas por coma")
     args = parser.parse_args()
 
+    # --- arrancar el proceso pedido (cada uno se queda corriendo hasta Ctrl+C)
     if args.proceso == "broker":
         arrancar_broker()
     elif args.proceso == "gt":

@@ -31,9 +31,11 @@ def log(texto):
 
 
 def arrancar_broker(puerto_gt=None, puerto_rmc=None):
+    """Abre los dos puertos del broker y queda pasando mensajes hasta Ctrl+C."""
+    # Si no se dan los puertos, se usan los del .env (5559 y 5556 por defecto)
     puerto_gt = puerto_gt or config.BROKER_PUERTO_GT
     puerto_rmc = puerto_rmc or config.BROKER_PUERTO_RMC
-    contexto = zmq.Context()
+    contexto = zmq.Context()                    # todo programa ZeroMQ necesita un contexto
 
     # ROUTER (frontend): aqui se conectan los GT y mandan sus peticiones
     frontend = contexto.socket(zmq.ROUTER)
