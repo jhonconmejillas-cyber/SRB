@@ -123,3 +123,29 @@ venv/bin/python -m capa_cliente.escenarios --escenario 2 --etiqueta rmc1    # 5 
 venv/bin/python -m capa_cliente.escenarios --escenario 3 --etiqueta rmc1    # 8 clientes
 ```
 Repetir con `--etiqueta rmc2` y `rmc3`. Los CSV quedan en `resultados/rmc<N>_<M>clientes/`.
+
+### Analizar
+
+```bash
+venv/bin/python -m herramientas.analizar_metricas "resultados/rmc*_*clientes" --gt resultados/gt_metricas.csv
+```
+Imprime una tabla (TPM, tiempo promedio, p95, maximo, exitos, fallos, reintentos, peticiones
+por gt_2) y guarda `resultados/resumen_metricas.csv`. Para las graficas (mejor en tu PC,
+copiando la carpeta `resultados/`):
+```bash
+pip install matplotlib
+python -m herramientas.analizar_metricas "resultados/rmc*_*clientes" --graficas
+```
+Genera `resultados/grafica_tpm.png` y `resultados/grafica_tiempo.png`.
+
+### Ojo al interpretar
+Con el ritmo del enunciado (20 peticiones por minuto por cliente) el sistema esta lejos de
+saturarse: el TPM es igual a la carga que mandan los clientes y casi no cambia con 1, 2 o 3 RMC.
+Para ver el efecto de agregar RMC hace falta una corrida de **estres**, mandando lo mas rapido
+posible (cada cliente envia la siguiente peticion apenas recibe la respuesta):
+```bash
+venv/bin/python -m capa_cliente.escenarios --escenario 3 --etiqueta rmc1 --por-minuto 100000
+```
+En ese caso el TPM mide la capacidad maxima. Como la persistencia es un solo proceso (SQLite
+admite un solo escritor), a partir de cierto punto ella es el cuello de botella: es un
+resultado valido para discutir en el informe.

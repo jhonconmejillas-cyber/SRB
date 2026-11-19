@@ -63,7 +63,7 @@ def main():
             p.terminate()
         raise
     print(f"Listo. Resultados en {carpeta}")
-    print(f"Analizar:  python -m herramientas.analizar_metricas {carpeta} --gt <gt_metricas.csv>")
+    print(f"Analizar:  python -m herramientas.analizar_metricas {carpeta} [--gt resultados/gt_metricas.csv]")
 
 
 if __name__ == "__main__":
