@@ -15,7 +15,9 @@ from pathlib import Path
 
 from config import E_mensaje as m
 
-COLUMNAS = ["hora_envio", "id_cliente", "tipo", "estado", "motivo", "ms", "uuid"]
+# intentos: cuantos envios necesito la peticion (1 = salio a la primera)
+# gt: a que GT le hablo al final (1 = primario, 2 = respaldo)
+COLUMNAS = ["hora_envio", "id_cliente", "tipo", "estado", "motivo", "ms", "uuid", "intentos", "gt"]
 
 
 def obtener_catalogo(cliente, mes):
@@ -107,7 +109,8 @@ def generar_carga(cliente, ruta_csv, duracion_s, por_minuto, pct_consultas,
                     del mis_reservas[id_reserva]
 
             escritor.writerow([f"{hora_envio:.3f}", cliente.id_cliente, tipo, respuesta["estado"],
-                               respuesta["motivo"] or "", f"{ms:.3f}", respuesta["uuid"]])
+                               respuesta["motivo"] or "", f"{ms:.3f}", respuesta["uuid"],
+                               cliente.ultimo_intentos, cliente.gt_actual + 1])
             enviadas += 1
 
             # Ritmo fijo: la siguiente peticion sale 'intervalo' segundos despues de la

@@ -106,6 +106,17 @@ CLIENTE_PUERTO_NOTIF_MAX = valor_opcional("CLIENTE_PUERTO_NOTIF_MAX", 5699)
 # --- Tiempo maximo que se espera una respuesta (milisegundos)
 TIMEOUT_MS = valor("TIMEOUT_MS")
 
+# --- Tolerancia a fallos del cliente (patron Lazy Pirate). Todas opcionales.
+#     CLIENTE_TIMEOUT_MS: cuanto espera el cliente CADA intento antes de darlo por perdido.
+#     CLIENTE_INTENTOS: cuantos intentos en total como maximo (contando el primero).
+#     CLIENTE_FALLOS_PARA_CAMBIAR: fallos seguidos con un GT antes de pasar al siguiente.
+#     BACKOFF_BASE_MS / BACKOFF_MAX_MS: espera entre intentos: 100, 200, 400... hasta el maximo.
+CLIENTE_TIMEOUT_MS = valor_opcional("CLIENTE_TIMEOUT_MS", TIMEOUT_MS)
+CLIENTE_INTENTOS = valor_opcional("CLIENTE_INTENTOS", 6)
+CLIENTE_FALLOS_PARA_CAMBIAR = valor_opcional("CLIENTE_FALLOS_PARA_CAMBIAR", 2)
+BACKOFF_BASE_MS = valor_opcional("BACKOFF_BASE_MS", 100)
+BACKOFF_MAX_MS = valor_opcional("BACKOFF_MAX_MS", 2000)
+
 
 if __name__ == "__main__":
     # python -m config.configuracion  -> muestra la configuracion leida
@@ -121,3 +132,6 @@ if __name__ == "__main__":
     print("  Notificac.   :", f"puertos {CLIENTE_PUERTO_NOTIF_MIN}-{CLIENTE_PUERTO_NOTIF_MAX}")
     print("  Base de datos:", BD_RUTA)
     print("  Timeout      :", TIMEOUT_MS, "ms")
+    print("  Cliente      :", f"{CLIENTE_TIMEOUT_MS} ms por intento, {CLIENTE_INTENTOS} intentos, "
+                              f"cambia de GT tras {CLIENTE_FALLOS_PARA_CAMBIAR} fallos, "
+                              f"espera {BACKOFF_BASE_MS}-{BACKOFF_MAX_MS} ms")

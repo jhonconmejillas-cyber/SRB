@@ -10,7 +10,22 @@ Cliente del SRB.
 El buzon es un socket PULL que el cliente abre en su propia maquina. Lo atiende
 un hilo en segundo plano, asi las notificaciones llegan aunque el cliente este
 ocupado haciendo otras peticiones.
+
+TOLERANCIA A FALLOS (patron "Lazy Pirate" de ZeroMQ, todo en el cliente):
+  - El cliente conoce una lista de GT: [gt_1 primario, gt_2 respaldo].
+    Le habla SOLO al GT actual; al respaldo solo pasa si el actual falla.
+  - Cada intento espera la respuesta un tiempo maximo (poll con timeout).
+  - Si no llega: el REQ queda trabado (no se puede volver a enviar sin
+    recibir), asi que se cierra, se espera un poco y se crea uno nuevo.
+  - La espera crece: 100, 200, 400, 800 ms... (retroceso exponencial) mas un
+    poco de azar (jitter), para que muchos clientes no reintenten todos a la vez.
+  - Tras CLIENTE_FALLOS_PARA_CAMBIAR fallos seguidos se pasa al siguiente GT.
+  - Errores de negocio (sin cupo, no existe, dato invalido...) NO se reintentan:
+    el sistema SI respondio, reintentar daria el mismo resultado.
+  - Cada reintento lleva el MISMO uuid: asi la persistencia puede reconocer una
+    operacion repetida y no hacerla dos veces.
 """
+import random
 import threading
 import time
 
@@ -20,15 +35,48 @@ from config import configuracion as config
 from config import E_mensaje as m
 
 
+def es_reintentable(respuesta):
+    """
+    Decide si vale la pena reintentar despues de recibir una respuesta.
+    Solo ERROR NO_DISPONIBLE: quiere decir que una pieza del sistema no esta
+    (el broker, los RMC, la persistencia), no que la peticion este mal.
+    Todo lo demas (EXITO, ACK, FALLO SIN_CUPO, ERROR DATO_INVALIDO...) es una
+    respuesta definitiva: reintentar daria lo mismo.
+    """
+    return respuesta["estado"] == m.ERROR and respuesta["motivo"] == m.NO_DISPONIBLE
+
+
 class Cliente:
-    def __init__(self, id_cliente, timeout_ms=config.TIMEOUT_MS, al_notificar=None):
+    def __init__(self, id_cliente, timeout_ms=None, al_notificar=None, gts=None,
+                 intentos=None, fallos_para_cambiar=None, backoff_base_ms=None,
+                 backoff_max_ms=None, mostrar_fallos=True):
         """
         al_notificar: funcion que se llama con cada notificacion que llega
                       (por defecto, imprimirla en pantalla).
+        gts:          lista de GT ["IP" o "IP:puerto", ...]; el primero es el primario.
+                      Por defecto GT_HOSTS del .env.
+        El resto de parametros, si no se dan, salen del .env (ver configuracion.py).
+        mostrar_fallos: imprimir en pantalla los reintentos y los cambios de GT.
         """
         self.id_cliente = id_cliente
-        self.timeout_ms = timeout_ms
-        self.direccion = config.direccion(config.HOST_CAPA_SERVICIOS, config.GT_PUERTO_CLIENTES)
+        self.timeout_ms = timeout_ms or config.CLIENTE_TIMEOUT_MS
+        self.intentos = intentos or config.CLIENTE_INTENTOS
+        self.fallos_para_cambiar = fallos_para_cambiar or config.CLIENTE_FALLOS_PARA_CAMBIAR
+        self.backoff_base_ms = backoff_base_ms or config.BACKOFF_BASE_MS
+        self.backoff_max_ms = backoff_max_ms or config.BACKOFF_MAX_MS
+        self.mostrar_fallos = mostrar_fallos
+
+        # --- replicas del GT: se empieza por el primario (posicion 0)
+        self.gts = [config.direccion_de(h, config.GT_PUERTO_CLIENTES) for h in (gts or config.GT_HOSTS)]
+        self.gt_actual = 0                     # a cual le estamos hablando
+        self.fallos_seguidos = 0               # timeouts seguidos con el GT actual
+        self.direccion = self.gts[0]
+
+        # --- contadores para las metricas y para la sustentacion
+        self.total_reintentos = 0              # cuantos reintentos se han hecho en total
+        self.cambios_de_gt = 0                 # cuantas veces se paso de un GT a otro
+        self.ultimo_intentos = 0               # intentos que necesito la ultima peticion
+
         self.contexto = zmq.Context()          # un contexto se puede compartir entre hilos
         self.socket = self._nuevo_socket()
 
@@ -42,32 +90,98 @@ class Cliente:
         self.notificaciones: list[dict] = []               # todos los avisos recibidos
 
     def _nuevo_socket(self):
+        """Crea un REQ conectado al GT actual."""
         socket = self.contexto.socket(zmq.REQ)
         socket.setsockopt(zmq.LINGER, 0)       # al cerrar, no esperar mensajes pendientes
         socket.connect(self.direccion)
         return socket
 
+    def _avisar(self, texto):
+        if self.mostrar_fallos:
+            print(f"[{time.strftime('%H:%M:%S')}] [C{self.id_cliente}] {texto}", flush=True)
+
+    def _nombre_gt(self, i=None):
+        """'gt_1 (tcp://...)' para los mensajes en pantalla."""
+        i = self.gt_actual if i is None else i
+        return f"gt_{i + 1} ({self.gts[i]})"
+
     # ================================================================ envio sincrono
     def enviar(self, tipo, datos):
         """
         Envia una peticion y devuelve (respuesta, milisegundos que tardo).
-        Si el GT no responde a tiempo, la respuesta es un ERROR NO_DISPONIBLE
-        armado aqui mismo: el cliente nunca se queda colgado.
+        Si ningun GT responde despues de todos los intentos, la respuesta es un
+        ERROR NO_DISPONIBLE armado aqui mismo: el cliente nunca se queda colgado.
         """
         peticion = m.crear_peticion(tipo, self.id_cliente, datos)
         return self._enviar_peticion(peticion)
 
+    def _espera_backoff(self, intento):
+        """
+        Retroceso exponencial: antes del reintento n se espera base * 2^n ms
+        (100, 200, 400, 800...) sin pasar del maximo, mas un jitter: un extra al
+        azar de hasta la mitad. Asi, si 8 clientes fallan a la vez, no vuelven
+        a golpear al GT todos en el mismo milisegundo. Devuelve los ms a esperar.
+        """
+        espera = min(self.backoff_base_ms * (2 ** intento), self.backoff_max_ms)
+        return espera + random.uniform(0, espera / 2)
+
+    def _cambiar_de_gt(self):
+        """Pasa al siguiente GT de la lista (gt_1 -> gt_2 -> gt_1 ...)."""
+        anterior = self.gt_actual
+        self.gt_actual = (self.gt_actual + 1) % len(self.gts)
+        self.direccion = self.gts[self.gt_actual]
+        self.fallos_seguidos = 0
+        self.cambios_de_gt += 1
+        self._avisar(f"FAILOVER: {self._nombre_gt(anterior)} no responde -> ahora uso {self._nombre_gt()}")
+
     def _enviar_peticion(self, peticion):
+        """
+        El corazon del Lazy Pirate. Repite hasta self.intentos veces:
+          1. enviar por el REQ al GT actual y esperar con poll(timeout)
+          2a. llego respuesta definitiva -> devolverla (aunque sea un error de negocio)
+          2b. no llego (timeout) o llego NO_DISPONIBLE -> contar el fallo,
+              si van muchos seguidos cambiar de GT, esperar (backoff) y repetir
+        La peticion (y su uuid) es la misma en todos los intentos.
+        """
         inicio = time.perf_counter()
-        self.socket.send(m.codificar(peticion))
-        if self.socket.poll(self.timeout_ms, zmq.POLLIN):     # espera la respuesta un tiempo maximo
-            respuesta = m.decodificar(self.socket.recv())
-        else:
-            # Un REQ que no recibio respuesta queda "trabado": se cambia por uno nuevo
-            self.socket.close()
+        respuesta = None
+        for intento in range(self.intentos):
+            self.ultimo_intentos = intento + 1
+            self.socket.send(m.codificar(peticion))
+            if self.socket.poll(self.timeout_ms, zmq.POLLIN):      # espera un tiempo maximo
+                respuesta = m.decodificar(self.socket.recv())
+                if not es_reintentable(respuesta):
+                    self.fallos_seguidos = 0                       # este GT si funciona
+                    break                                          # respuesta definitiva
+                razon = f"respondio NO_DISPONIBLE ({respuesta['datos'].get('razon', '')})"
+            else:
+                # Sin respuesta: este REQ quedo esperando un recv que nunca llegara.
+                # No se puede volver a usar: se cierra y luego se crea uno nuevo.
+                self.socket.close()
+                self.socket = None
+                respuesta = None
+                razon = f"no respondio en {self.timeout_ms} ms"
+
+            # ---- este intento fallo
+            self.fallos_seguidos += 1
+            if intento == self.intentos - 1:
+                break                                              # no quedan intentos
+            self.total_reintentos += 1
+            espera = self._espera_backoff(intento)
+            self._avisar(f"{peticion['tipo']}: {self._nombre_gt()} {razon}; "
+                         f"reintento {intento + 1} en {espera:.0f} ms")
+            if self.fallos_seguidos >= self.fallos_para_cambiar and len(self.gts) > 1:
+                self._cambiar_de_gt()          # el reintento ya va al otro GT
+            time.sleep(espera / 1000)          # retroceso antes de volver a intentar
+            if self.socket is not None:
+                self.socket.close()            # tambien se renueva si cambio de GT
             self.socket = self._nuevo_socket()
-            respuesta = m.crear_respuesta(peticion, m.ERROR, m.NO_DISPONIBLE,
-                                          {"razon": f"el GT no respondio en {self.timeout_ms} ms"})
+
+        if self.socket is None:                # el ultimo intento fue un timeout
+            self.socket = self._nuevo_socket()
+        if respuesta is None:
+            respuesta = m.crear_respuesta(peticion, m.ERROR, m.NO_DISPONIBLE, {
+                "razon": f"ningun GT respondio despues de {self.ultimo_intentos} intentos"})
         ms = (time.perf_counter() - inicio) * 1000
         return respuesta, ms
 

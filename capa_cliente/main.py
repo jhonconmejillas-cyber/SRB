@@ -36,6 +36,8 @@ def main():
                         help="(carga) porcentaje de cancelaciones; el resto son reservas")
     parser.add_argument("--salida", help="(carga) CSV de resultados; por defecto resultados/cliente_<id>.csv")
     parser.add_argument("--semilla", type=int, help="(carga) semilla del azar, para repetir una corrida")
+    parser.add_argument("--gts", help="GT separados por coma, primero el primario "
+                                      "(ej. 10.43.99.232,10.43.100.84); por defecto GT_HOSTS del .env")
     args = parser.parse_args()
 
     # --- revisar que los numeros tengan sentido
@@ -47,7 +49,9 @@ def main():
     if args.carga and (min(porcentajes) < 0 or sum(porcentajes) > 100):
         parser.error("los porcentajes deben ser >= 0 y sumar maximo 100")
 
-    cliente = Cliente(args.id)
+    # Si se dan --gts, reemplazan a GT_HOSTS del .env
+    gts = [x.strip() for x in args.gts.split(",") if x.strip()] if args.gts else None
+    cliente = Cliente(args.id, gts=gts)
     try:
         if args.script:
             resumen = ejecutar_script(cliente, args.script, args.detalle)
@@ -62,7 +66,8 @@ def main():
                                      semilla=args.semilla)
             sin_aviso = cliente.esperar_notificaciones(10)    # avisos de cancelaciones pendientes
             print(f"[C{args.id}] terminado: {enviadas} peticiones, "
-                  f"{len(cliente.notificaciones)} notificaciones recibidas"
+                  f"{len(cliente.notificaciones)} notificaciones recibidas, "
+                  f"{cliente.total_reintentos} reintentos, {cliente.cambios_de_gt} cambios de GT"
                   + (f", {sin_aviso} sin aviso" if sin_aviso else ""), flush=True)
     except FileNotFoundError:
         print(f"No existe el archivo {args.script}")
