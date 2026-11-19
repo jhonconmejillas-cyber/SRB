@@ -5,3 +5,6 @@ __pycache__/
 datos/*.db
 resultados/
 
+
+# logs de los procesos lanzados con despliegue/negocio.sh
+logs/
