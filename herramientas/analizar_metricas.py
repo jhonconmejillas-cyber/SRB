@@ -115,11 +115,16 @@ def analizar(carpeta, filas, ruta_gt=None):
     }
     for clave, valor in tiempos([f["ms"] for f in completadas]).items():
         r[f"ms_{clave}"] = valor
-    # Tiempo por tipo de operacion (la cancelacion mide solo el ACK: es asincrona)
+    # Por tipo de operacion, lo que pide la Tabla 1: tiempo promedio, desviacion
+    # estandar y TPM (la cancelacion mide solo el ACK: es asincrona)
     for tipo in TIPOS:
         de_tipo = [f["ms"] for f in completadas if f["tipo"] == tipo]
-        r[f"n_{tipo.lower()}"] = len(de_tipo)
-        r[f"ms_{tipo.lower()}"] = statistics.mean(de_tipo) if de_tipo else 0.0
+        t = tipo.lower()
+        r[f"n_{t}"] = len(de_tipo)
+        r[f"ms_{t}"] = statistics.mean(de_tipo) if de_tipo else 0.0
+        # stdev necesita al menos 2 datos
+        r[f"desv_{t}"] = statistics.stdev(de_tipo) if len(de_tipo) > 1 else 0.0
+        r[f"tpm_{t}"] = len(de_tipo) / minutos
 
     if ruta_gt:
         r.update(analizar_gt(ruta_gt, inicio, fin))
@@ -152,9 +157,12 @@ def imprimir(resultados):
         print(f"{r['carpeta']:<20}{r['rmc'] or '-':>4}{r['clientes']:>5}{r['tpm']:>8.1f}"
               f"{r['ms_promedio']:>9.1f}{r['ms_p95']:>9.1f}{r['ms_maximo']:>9.1f}"
               f"{r['exito']:>7}{r['fallo_negocio']:>7}{r['error']:>7}{r['reintentos']:>7}{r['por_gt2']:>6}")
-    print("\nTiempo promedio por tipo (ms):")
+    print("\nPor tipo (Tabla 1): promedio ms +- desviacion estandar, TPM")
     for r in resultados:
-        partes = "  ".join(f"{t.lower()} {r[f'ms_{t.lower()}']:.1f} (n={r[f'n_{t.lower()}']})" for t in TIPOS)
+        partes = "  ".join(
+            f"{t.lower()} {r[f'ms_{t.lower()}']:.1f}+-{r[f'desv_{t.lower()}']:.1f} ms "
+            f"TPM {r[f'tpm_{t.lower()}']:.1f}"
+            for t in TIPOS if r[f"n_{t.lower()}"])
         print(f"  {r['carpeta']:<20}{partes}")
     if "gt_tpm" in resultados[0]:
         print("\nMedido en el GT:")
