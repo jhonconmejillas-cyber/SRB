@@ -69,7 +69,10 @@ def main():
     subprocess.run([sys.executable, "-m", "capa_persistencia.cargar_datos"], cwd=config.RAIZ,
                    env=dict(os.environ, BD_RUTA=BD_PRUEBA), stdout=subprocess.DEVNULL, check=True)
 
-    brokers_rmc = "127.0.0.1:5556,127.0.0.1:5566"
+    # En un solo PC no puede haber dos procesos en el mismo puerto, asi que
+    # broker_2 y gt_2 usan otros puertos (se cambian con variables de entorno,
+    # que tienen prioridad sobre el .env). En las VM todos usan los mismos.
+    brokers_rmc = "127.0.0.1:5556,127.0.0.1:5566"     # cada RMC se conecta a los dos brokers
     p = {
         "persistencia": arrancar("persistencia", "capa_persistencia.main"),
         "broker_1": arrancar("broker_1", "capa_negocios.main", "broker"),
@@ -83,12 +86,14 @@ def main():
         p[f"rmc_{letra}"] = arrancar(f"rmc_{letra}", "capa_negocios.main", "rmc", "--brokers", brokers_rmc)
     time.sleep(2.5)                     # que todos abran puertos y se conecten
 
-    contexto = zmq.Context()
+    contexto = zmq.Context()            # el de esta prueba, para hacer de cliente
     try:
         caidos = [n for n, x in p.items() if x.poll() is not None]
         revisar("los 9 procesos arrancaron", not caidos)
 
         # ---------------------------------------------- los dos GT, 3 RMC
+        # Cada RMC escribe en su log una linea con "=>" por peticion atendida:
+        # contandolas se ve cuantas le toco a cada uno.
         print("\n--- 30 consultas a gt_1 y 30 a gt_2")
         ok_1 = sum(1 for _ in range(30)
                    if (r := pedir(contexto, 5555, m.CONSULTA, {"mes": "noviembre"})) and r["estado"] == m.EXITO)
@@ -133,7 +138,7 @@ def main():
         r = pedir(contexto, 5555, m.CONSULTA, {"mes": "noviembre"})
         revisar("gt_1 vuelve a funcionar sin reiniciar GT ni RMC (reconexion automatica)",
                 r is not None and r["estado"] == m.EXITO)
-    finally:
+    finally:                            # pase lo que pase, apagar todos los procesos
         contexto.term()
         for x in p.values():
             x.kill()
